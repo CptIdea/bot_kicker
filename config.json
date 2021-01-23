@@ -1,0 +1,6 @@
+{
+  "min_to_kick": 10,
+  "secs": 600,
+  "sups": [321],
+  "min_days_in_chat":60
+}

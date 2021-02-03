@@ -6,12 +6,13 @@ import (
 	vk "github.com/CptIdea/go-vk-api"
 	"io/ioutil"
 	"math/rand"
+	"net/http"
 	"strconv"
 	"strings"
 	"time"
 )
 
-var GROUPID = YOURGROUPID
+var GROUPID = GROUP ID HERE
 var votes = make(map[int]*Voting)
 var config struct {
 	Secs int
@@ -22,7 +23,7 @@ var config struct {
 
 func main() {
 	bot := vk.Session{
-		Token:   "YOURTOKEN",
+		Token:   "YOUR TOKEN HERE",
 		Version: "5.110",
 	}
 	rand.Seed(time.Now().UnixNano())
@@ -31,27 +32,25 @@ main:
 		update := bot.UpdateCheck(GROUPID)
 
 		for _, update := range update.Updates {
-			cnfgFile, err := ioutil.ReadFile("config.json")
-			if err != nil {
-				fmt.Println(err)
-			}
-			err = json.Unmarshal(cnfgFile, &config)
-			if err != nil {
-				fmt.Println(err)
-			}
+			UpdateConfig()
+
+			var err error
 			resp := bot.SendRequest("messages.getConversationMembers", vk.Request{"peer_id": update.Object.MessageNew.PeerId, "group_id": GROUPID})
 			Chat := struct {
 				Response struct {
 					Items []struct {
-						Id       int `json:"member_id"`
-						Is_admin bool
+						Id        int `json:"member_id"`
+						Is_admin  bool
 						Join_date int
 					}
 				}
 			}{}
-			json.Unmarshal(resp, &Chat)
+			err = json.Unmarshal(resp, &Chat)
+			if err != nil {
+				fmt.Println(err)
+			}
 			for _, profile := range Chat.Response.Items {
-				if time.Since(time.Unix(int64(profile.Join_date),0))<2*time.Hour*24*time.Duration(config.Days)&&profile.Id==update.Object.MessageNew.FromId{
+				if time.Since(time.Unix(int64(profile.Join_date), 0)) < 2*time.Hour*24*time.Duration(config.Days) && profile.Id == update.Object.MessageNew.FromId && !isSup(update.Object.MessageNew.FromId) {
 					continue main
 				}
 			}
@@ -79,10 +78,14 @@ main:
 						for _, v := range votes[KickID].voters {
 							msg += v.FirstName + " " + v.LastName + " - "
 							if v.vote {
-								msg += "За\n"
+								msg += "За"
 							} else {
-								msg += "Против\n"
+								msg += "Против"
 							}
+							if isSup(v.ID) {
+								msg += " x2"
+							}
+							msg += "\n"
 						}
 					} else {
 						msg += " Голосов пока нет..."
@@ -111,7 +114,6 @@ main:
 				curKick, _ := strconv.Atoi(update.Object.MessageNew.Payload)
 				if _, ok := votes[curKick]; ok {
 					if strings.Contains(update.Object.MessageNew.Text, "Да") {
-						fmt.Println(votes[curKick].votes)
 						votes[curKick].votes <- voter{
 							User: bot.GetUsersInfo([]int{update.Object.MessageNew.FromId})[0],
 							vote: true,
@@ -124,22 +126,26 @@ main:
 						}
 					}
 					if strings.Contains(update.Object.MessageNew.Text, "Отмена") {
-						if votes[curKick].author==update.Object.MessageNew.FromId{
+						if votes[curKick].author == update.Object.MessageNew.FromId {
+							fmt.Println("author")
 							votes[curKick].cancel <- true
 							continue main
 						}
-						for _, sup := range config.Sups {
-							if update.Object.MessageNew.FromId == sup {
-								votes[curKick].cancel <- true
-								continue main
-							}
-						}
+						//for _, sup := range config.Sups {
+						//	if update.Object.MessageNew.FromId == sup {
+						//		fmt.Println("sup")
+						//		votes[curKick].cancel <- true
+						//		continue main
+						//	}
+						//}
 						for _, p := range Chat.Response.Items {
-							if p.Is_admin {
+							if p.Is_admin && p.Id == update.Object.MessageNew.FromId {
+								fmt.Println("admin")
 								votes[curKick].cancel <- true
 								continue main
 							}
 						}
+						bot.SendMessage(update.Object.MessageNew.PeerId, "Вы не можете отменить голосование")
 					}
 				}
 			}
@@ -170,12 +176,12 @@ func VoteControl(voting *Voting, bot vk.Session) {
 		case <-voting.cancel:
 			delete(votes, voting.kickUser.ID)
 			bot.SendMessage(voting.chat, "Отмена голосования по кику "+voting.kickUser.FirstName+" "+voting.kickUser.LastName)
-			fmt.Println("Голосование+" + voting.String() + " закончено")
+			fmt.Println("Голосование+" + voting.String() + " закончено. Отмена")
 			return
 		case <-voting.timer.C:
-			fmt.Println("Голосование+" + voting.String() + " закончено")
+			fmt.Println("Голосование+" + voting.String() + " закончено. Таймер")
 			if len(voting.voters) < config.Min {
-				bot.SendMessage(voting.chat, "Недостаточно голосов чтобы принять решение по кику "+voting.kickUser.FirstName+" "+voting.kickUser.LastName)
+				bot.SendMessage(voting.chat, fmt.Sprintf("Недостаточно голосов чтобы принять решение по кику %s %s\n%d/%d", voting.kickUser.FirstName, voting.kickUser.LastName, len(voting.voters), config.Min))
 				delete(votes, voting.kickUser.ID)
 				return
 			}
@@ -197,12 +203,25 @@ func VoteControl(voting *Voting, bot vk.Session) {
 				bot.SendMessage(voting.chat, "Скажите пока-пока пользователю "+voting.kickUser.FirstName+" "+voting.kickUser.LastName)
 				bot.SendRequest("messages.removeChatUser", vk.Request{"chat_id": voting.chat - 2000000000, "member_id": voting.kickUser.ID})
 			} else {
-				bot.SendMessage(voting.chat, "Не хватает голосов чтобы кикнуть "+voting.kickUser.FirstName+" "+voting.kickUser.LastName)
+				bot.SendMessage(voting.chat, "Не хватает голосов чтобы кикнуть "+voting.kickUser.FirstName+" "+voting.kickUser.LastName+"\nГолосов: "+strconv.Itoa(kick)+"/"+strconv.Itoa(len(voting.voters)/2))
 			}
 
 
 		case voter := <-voting.votes:
+			ans, ok := voting.voters[voter.ID]
+			if !ok {
+				if voter.vote {
+					bot.SendMessage(voting.chat, "Принят голос \"За\" в голосовании по "+voting.kickUser.FirstName+" "+voting.kickUser.LastName)
+				} else {
+					bot.SendMessage(voting.chat, "Принят голос \"Против\" в голосовании по "+voting.kickUser.FirstName+" "+voting.kickUser.LastName)
+				}
+			} else {
+				if voter.vote != ans.vote {
+					bot.SendMessage(voting.chat, "Заменён голос в голосовании по "+voting.kickUser.FirstName+" "+voting.kickUser.LastName)
+				}
+			}
 			voting.voters[voter.ID] = voter
+			fmt.Printf("Голосование %s %s: голос %s %s - %t\n", voting.kickUser.FirstName, voting.kickUser.LastName, voter.FirstName, voter.LastName, voter.vote)
 		}
 	}
 }
@@ -231,4 +250,25 @@ func GetKeyboard(id int) vk.Keyboard {
 
 func (v Voting) String() string {
 	return "{" + strconv.Itoa(v.chat) + " " + strconv.Itoa(v.kickUser.ID) + "}"
+}
+
+func UpdateConfig() {
+	cnfgFile, err := ioutil.ReadFile("config.json")
+	if err != nil {
+		fmt.Println(err)
+	}
+
+	err = json.Unmarshal(cnfgFile, &config)
+	if err != nil {
+		fmt.Println(err)
+	}
+}
+
+func isSup(id int) bool {
+	for _, sup := range config.Sups {
+		if sup == id {
+			return true
+		}
+	}
+	return false
 }

@@ -3,9 +3,8 @@ package main
 import (
 	"encoding/json"
 	"fmt"
-	vk "github.com/CptIdea/go-vk-api"
+	vk "github.com/CptIdea/go-vk-api-2"
 	"io/ioutil"
-	"math/rand"
 	"net/http"
 	"strconv"
 	"strings"
@@ -22,20 +21,25 @@ var config struct {
 }
 
 func main() {
-	bot := vk.Session{
-		Token:   "YOUR TOKEN HERE",
-		Version: "5.110",
-	}
-	rand.Seed(time.Now().UnixNano())
+	bot := vk.NewSession("TOKEN","5.110")
+
+
 main:
 	for {
-		update := bot.UpdateCheck(GROUPID)
-
+		update,err := bot.UpdateCheck(GROUPID)
+		if err != nil {
+			fmt.Println(err)
+			continue
+		}
 		for _, update := range update.Updates {
 			UpdateConfig()
 
 			var err error
-			resp := bot.SendRequest("messages.getConversationMembers", vk.Request{"peer_id": update.Object.MessageNew.PeerId, "group_id": GROUPID})
+			resp,err := bot.SendRequest("messages.getConversationMembers", vk.Request{"peer_id": update.Object.MessageNew.PeerId, "group_id": GROUPID})
+			if err != nil {
+				fmt.Println(err)
+				continue
+			}
 			Chat := struct {
 				Response struct {
 					Items []struct {
@@ -48,6 +52,7 @@ main:
 			err = json.Unmarshal(resp, &Chat)
 			if err != nil {
 				fmt.Println(err)
+				continue
 			}
 			for _, profile := range Chat.Response.Items {
 				if time.Since(time.Unix(int64(profile.Join_date), 0)) < 2*time.Hour*24*time.Duration(config.Days) && profile.Id == update.Object.MessageNew.FromId && !isSup(update.Object.MessageNew.FromId) {
@@ -94,13 +99,15 @@ main:
 					continue
 				}
 
-				user := bot.GetUsersInfo([]int{KickID})[0]
+				users,_ := bot.GetUsersInfo([]int{KickID})
+				user := users[0]
 				bot.SendKeyboard(update.Object.MessageNew.PeerId, GetKeyboard(KickID), "Запущено голосование для кика пользователя [id"+strconv.Itoa(KickID)+"|"+user.FirstName+" "+user.LastName+"]\n"+"Время на голосование: "+strconv.Itoa(config.Secs)+" секунд")
+
 
 				Voting := Voting{
 					chat:     update.Object.MessageNew.PeerId,
 					timer:    time.NewTimer(time.Duration(config.Secs) * time.Second),
-					kickUser: bot.GetUsersInfo([]int{KickID})[0],
+					kickUser: user,
 					votes:    make(chan voter),
 					voters:   make(map[int]voter),
 					cancel:   make(chan bool),
@@ -114,14 +121,18 @@ main:
 				curKick, _ := strconv.Atoi(update.Object.MessageNew.Payload)
 				if _, ok := votes[curKick]; ok {
 					if strings.Contains(update.Object.MessageNew.Text, "Да") {
+						usrs, _ := bot.GetUsersInfo([]int{update.Object.MessageNew.FromId})
+						usr := usrs[0]
 						votes[curKick].votes <- voter{
-							User: bot.GetUsersInfo([]int{update.Object.MessageNew.FromId})[0],
+							User: usr,
 							vote: true,
 						}
 					}
 					if strings.Contains(update.Object.MessageNew.Text, "Нет") {
+						usrs, _ := bot.GetUsersInfo([]int{update.Object.MessageNew.FromId})
+						usr := usrs[0]
 						votes[curKick].votes <- voter{
-							User: bot.GetUsersInfo([]int{update.Object.MessageNew.FromId})[0],
+							User: usr,
 							vote: false,
 						}
 					}
@@ -253,7 +264,12 @@ func (v Voting) String() string {
 }
 
 func UpdateConfig() {
-	cnfgFile, err := ioutil.ReadFile("config.json")
+	cnfgResp, err := http.Get("https://raw.githubusercontent.com/dima13230/bot_kicker/main/config.json")
+	if err != nil {
+		fmt.Println(err)
+	}
+	cnfgFile, err := ioutil.ReadAll(cnfgResp.Body)
+	//cnfgFile, err := ioutil.ReadFile("config.json")
 	if err != nil {
 		fmt.Println(err)
 	}
